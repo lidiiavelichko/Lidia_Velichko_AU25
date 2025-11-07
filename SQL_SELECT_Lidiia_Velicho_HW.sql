@@ -42,8 +42,7 @@ SELECT
 FROM public.film f
 INNER JOIN public.film_category fc ON f.film_id = fc.film_id
 INNER JOIN public.category cat ON fc.category_id = cat.category_id
-WHERE cat.name = 'Animation'
-  AND f.release_year BETWEEN 2017 AND 2019
+WHERE f.release_year BETWEEN 2017 AND 2019
   AND f.rental_rate > 1
   AND f.film_id IN (
       SELECT fc2.film_id 
@@ -336,36 +335,41 @@ WHERE EXISTS (
 ORDER BY total_revenue DESC
 LIMIT 3;
 
--- JOIN Solution
-WITH revenue_data AS (
+-- JOIN Solution (no CTEs, no window functions)
+SELECT 
+    s.staff_id,
+    s.first_name,
+    s.last_name,
+    ls.store_id AS last_store_worked,
+    er.total_revenue
+FROM public.staff s
+INNER JOIN (
     SELECT 
         p.staff_id,
         SUM(p.amount) AS total_revenue
     FROM public.payment p
     WHERE EXTRACT(YEAR FROM p.payment_date) = 2017
     GROUP BY p.staff_id
-),
-store_data AS (
+) er ON s.staff_id = er.staff_id
+INNER JOIN (
     SELECT 
         p.staff_id,
         i.store_id,
-        p.payment_date,
-        ROW_NUMBER() OVER (PARTITION BY p.staff_id ORDER BY p.payment_date DESC) as rn
+        p.payment_date
     FROM public.payment p
     INNER JOIN public.rental r ON p.rental_id = r.rental_id
     INNER JOIN public.inventory i ON r.inventory_id = i.inventory_id
     WHERE EXTRACT(YEAR FROM p.payment_date) = 2017
-)
-SELECT 
-    s.staff_id,
-    s.first_name,
-    s.last_name,
-    sd.store_id AS last_store_worked,
-    rd.total_revenue
-FROM revenue_data rd
-INNER JOIN public.staff s ON rd.staff_id = s.staff_id
-INNER JOIN store_data sd ON rd.staff_id = sd.staff_id AND sd.rn = 1
-ORDER BY rd.total_revenue DESC
+) ls ON ls.staff_id = s.staff_id
+INNER JOIN (
+    SELECT 
+        p.staff_id,
+        MAX(p.payment_date) AS max_payment_date
+    FROM public.payment p
+    WHERE EXTRACT(YEAR FROM p.payment_date) = 2017
+    GROUP BY p.staff_id
+) mp ON mp.staff_id = ls.staff_id AND mp.max_payment_date = ls.payment_date
+ORDER BY er.total_revenue DESC
 LIMIT 3;
 
 -- =============================================
@@ -409,7 +413,7 @@ FROM mpa_age_groups
 ORDER BY rental_count DESC
 LIMIT 5;
 
--- Subquery Solution  ?
+-- Subquery Solution
 SELECT 
     film_data.title,
     film_data.rating,
@@ -529,30 +533,36 @@ LIMIT 10;
 
 -- VERSION 2: Gaps between sequential films per actor
 
--- CTE Solution for V2 (using window functions)
-WITH actor_films_ordered AS (
-    SELECT 
+-- CTE Solution for V2 (without window functions)
+WITH actor_film_years AS (
+    SELECT DISTINCT
         fa.actor_id,
-        f.film_id,
-        f.release_year,
-        LAG(f.release_year) OVER (PARTITION BY fa.actor_id ORDER BY f.release_year) AS prev_release_year
+        f.release_year
     FROM public.film_actor fa
     INNER JOIN public.film f ON fa.film_id = f.film_id
 ),
-actor_gaps AS (
+actor_year_pairs AS (
     SELECT 
-        actor_id,
-        release_year,
-        prev_release_year,
-        (release_year - prev_release_year) AS year_gap
-    FROM actor_films_ordered
-    WHERE prev_release_year IS NOT NULL
+        af1.actor_id,
+        af1.release_year AS prev_release_year,
+        afy2.release_year AS next_release_year
+    FROM actor_film_years af1
+    INNER JOIN actor_film_years afy2 
+        ON af1.actor_id = afy2.actor_id
+       AND afy2.release_year > af1.release_year
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM actor_film_years afy3
+        WHERE afy3.actor_id = af1.actor_id
+          AND afy3.release_year > af1.release_year
+          AND afy3.release_year < afy2.release_year
+    )
 ),
 max_gaps AS (
     SELECT 
         actor_id,
-        MAX(year_gap) AS max_gap_between_films
-    FROM actor_gaps
+        MAX(next_release_year - prev_release_year) AS max_gap_between_films
+    FROM actor_year_pairs
     GROUP BY actor_id
 )
 SELECT 
@@ -639,5 +649,5 @@ Subqueries:
 
 JOIN:
 - Pros: Usually the best performance; optimizer understands JOINs well; aggregation with GROUP BY is efficient and scalable.
-- Cons: Queries with many JOINs can become hard to read; easier to introduce duplicate rows if you dont control joins and grouping carefully.
+- Cons: Queries with many JOINs can become hard to read; easier to introduce duplicate rows if you don't control joins and grouping carefully.
 */
